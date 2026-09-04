@@ -2463,6 +2463,13 @@ impl Window {
         self.platform_window.bounds()
     }
 
+    /// Returns the native platform window handle for embedding child surfaces.
+    pub fn native_window_handle(
+        &self,
+    ) -> std::result::Result<raw_window_handle::WindowHandle<'_>, HandleError> {
+        self.platform_window.window_handle()
+    }
+
     /// Regions currently obscured by system UI, including the software keyboard.
     pub fn insets(&self) -> WindowInsets {
         self.platform_window.insets()
@@ -3055,6 +3062,14 @@ impl Window {
         );
         self.needs_present.set(false);
         profiling::finish_frame!();
+    }
+
+    /// Presents the current scene again without drawing or invalidating views.
+    ///
+    /// This is intended for stable scenes whose external GPU resources changed,
+    /// such as an atlas image updated in place.
+    pub fn present_cached_frame(&mut self) {
+        self.present();
     }
 
     /// Presents the most recently drawn frame if it hasn't been presented yet.
@@ -4539,6 +4554,48 @@ impl Window {
         frame_index: usize,
         grayscale: bool,
     ) -> Result<()> {
+        self.paint_image_with_sampling(
+            bounds,
+            image_bounds,
+            corner_radii,
+            data,
+            frame_index,
+            grayscale,
+            false,
+        )
+    }
+
+    /// Paint an image with nearest-neighbor sampling.
+    pub fn paint_image_nearest(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        image_bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        data: Arc<RenderImage>,
+        frame_index: usize,
+        grayscale: bool,
+    ) -> Result<()> {
+        self.paint_image_with_sampling(
+            bounds,
+            image_bounds,
+            corner_radii,
+            data,
+            frame_index,
+            grayscale,
+            true,
+        )
+    }
+
+    fn paint_image_with_sampling(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        image_bounds: Bounds<Pixels>,
+        corner_radii: Corners<Pixels>,
+        data: Arc<RenderImage>,
+        frame_index: usize,
+        grayscale: bool,
+        nearest: bool,
+    ) -> Result<()> {
         self.invalidator.debug_assert_paint();
 
         let visible_bounds = bounds.intersect(&image_bounds);
@@ -4617,7 +4674,7 @@ impl Window {
 
         self.next_frame.scene.insert_primitive(PolychromeSprite {
             order: 0,
-            pad: 0,
+            pad: u32::from(nearest),
             grayscale: grayscale.into(),
             bounds: visible_bounds_snapped,
             content_mask,
@@ -4645,6 +4702,23 @@ impl Window {
             content_mask,
             image_buffer,
         });
+    }
+
+    /// Uploads new pixels for an image while retaining same-sized atlas tiles.
+    pub fn update_image(&mut self, data: Arc<RenderImage>) -> Result<()> {
+        for frame_index in 0..data.frame_count() {
+            let params = RenderImageParams {
+                image_id: data.id,
+                frame_index,
+            };
+            self.sprite_atlas.update(
+                &params.into(),
+                data.size(frame_index),
+                data.as_bytes(frame_index)
+                    .expect("It's the caller's job to pass a valid frame index"),
+            )?;
+        }
+        Ok(())
     }
 
     /// Removes an image from the sprite atlas.

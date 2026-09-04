@@ -3039,6 +3039,9 @@ impl Interactivity {
                         DispatchPhase::Bubble => {
                             if let Some(mouse_down) = captured_mouse_down.take() {
                                 let btn = mouse_down.button;
+                                if event.button != btn {
+                                    return;
+                                }
 
                                 let mouse_click = ClickEvent::Mouse(MouseClickEvent {
                                     down: mouse_down,
@@ -4303,8 +4306,8 @@ impl ScrollHandle {
 mod tests {
     use super::*;
     use crate::{
-        AnyWindowHandle, AppContext as _, Context, InputEvent, Keystroke, Modifiers, MouseMoveEvent,
-        TestAppContext, canvas, svg, util::FluentBuilder as _,
+        AnyWindowHandle, AppContext as _, Context, InputEvent, Keystroke, Modifiers,
+        MouseMoveEvent, TestAppContext, canvas, svg, util::FluentBuilder as _,
     };
     use std::{
         cell::{Cell, RefCell},
@@ -5450,9 +5453,21 @@ mod tests {
                 events,
             }
         });
-        cx.simulate_mouse_down(point(px(10.), px(10.)), MouseButton::Left, Modifiers::none());
-        cx.simulate_mouse_move(point(px(200.), px(10.)), MouseButton::Left, Modifiers::none());
-        cx.simulate_mouse_up(point(px(200.), px(10.)), MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_down(
+            point(px(10.), px(10.)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            point(px(200.), px(10.)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            point(px(200.), px(10.)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
         assert_eq!(
             events.borrow().as_slice(),
             ["down", "handle-move", "handle-up"]
@@ -5469,14 +5484,26 @@ mod tests {
                 events,
             }
         });
-        cx.simulate_mouse_down(point(px(10.), px(10.)), MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_down(
+            point(px(10.), px(10.)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
         view.update(cx, |view, cx| {
             view.removed = true;
             cx.notify();
         });
         cx.run_until_parked();
-        cx.simulate_mouse_move(point(px(10.), px(10.)), MouseButton::Left, Modifiers::none());
-        cx.simulate_mouse_up(point(px(10.), px(10.)), MouseButton::Left, Modifiers::none());
+        cx.simulate_mouse_move(
+            point(px(10.), px(10.)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_up(
+            point(px(10.), px(10.)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
         assert_eq!(
             events.borrow().as_slice(),
             ["down", "other-move", "other-up"]

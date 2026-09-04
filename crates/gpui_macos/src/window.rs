@@ -135,6 +135,10 @@ unsafe fn build_classes() {
             let mut decl = ClassDecl::new("GPUIView", class!(NSView)).unwrap();
             decl.add_ivar::<*mut c_void>(WINDOW_STATE_IVAR);
             decl.add_method(sel!(dealloc), dealloc_view as extern "C" fn(&Object, Sel));
+            decl.add_method(
+                sel!(acceptsFirstResponder),
+                yes as extern "C" fn(&Object, Sel) -> BOOL,
+            );
 
             decl.add_method(
                 sel!(performKeyEquivalent:),
@@ -2546,11 +2550,25 @@ extern "C" fn handle_key_event(this: &Object, native_event: id, key_equivalent: 
 }
 
 extern "C" fn handle_view_event(this: &Object, _: Sel, native_event: id) {
+    let native_event_type = unsafe { native_event.eventType() };
+    if matches!(
+        native_event_type,
+        NSEventType::NSLeftMouseDown
+            | NSEventType::NSRightMouseDown
+            | NSEventType::NSOtherMouseDown
+    ) {
+        unsafe {
+            let view = this as *const Object as *mut Object;
+            let window: id = msg_send![view, window];
+            if window != nil {
+                let _: BOOL = msg_send![window, makeFirstResponder: view];
+            }
+        }
+    }
     let window_state = unsafe { get_window_state(this) };
     let weak_window_state = Arc::downgrade(&window_state);
     let mut lock = window_state.as_ref().lock();
     let window_height = lock.content_size().height;
-    let native_event_type = unsafe { native_event.eventType() };
     match native_event_type {
         NSEventType::NSLeftMouseDown => {
             // AppKit owns `native_event` for the callback; retain it so the drag session can still
