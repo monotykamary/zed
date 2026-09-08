@@ -5399,6 +5399,7 @@ mod tests {
 
     struct PointerCaptureView {
         removed: bool,
+        release_on_move: bool,
         events: Rc<RefCell<Vec<&'static str>>>,
     }
 
@@ -5433,7 +5434,13 @@ mod tests {
                     })
                     .on_mouse_move({
                         let events = events.clone();
-                        move |_, _, _| events.borrow_mut().push("handle-move")
+                        let release_on_move = self.release_on_move;
+                        move |_, window, _| {
+                            events.borrow_mut().push("handle-move");
+                            if release_on_move {
+                                window.release_pointer();
+                            }
+                        }
                     })
                     .on_mouse_up(MouseButton::Left, {
                         let events = events.clone();
@@ -5450,6 +5457,7 @@ mod tests {
             let events = events.clone();
             move |_, _| PointerCaptureView {
                 removed: false,
+                release_on_move: false,
                 events,
             }
         });
@@ -5475,12 +5483,42 @@ mod tests {
     }
 
     #[gpui::test]
+    fn explicit_pointer_release_retargets_before_mouse_up(cx: &mut TestAppContext) {
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let (_view, cx) = cx.add_window_view({
+            let events = events.clone();
+            move |_, _| PointerCaptureView {
+                removed: false,
+                release_on_move: true,
+                events,
+            }
+        });
+        cx.simulate_mouse_down(
+            point(px(10.), px(10.)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            point(px(200.), px(10.)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        cx.simulate_mouse_move(
+            point(px(200.), px(10.)),
+            MouseButton::Left,
+            Modifiers::none(),
+        );
+        assert_eq!(events.borrow().as_slice(), ["down", "handle-move"]);
+    }
+
+    #[gpui::test]
     fn pointer_capture_releases_when_element_is_not_painted(cx: &mut TestAppContext) {
         let events = Rc::new(RefCell::new(Vec::new()));
         let (view, cx) = cx.add_window_view({
             let events = events.clone();
             move |_, _| PointerCaptureView {
                 removed: false,
+                release_on_move: false,
                 events,
             }
         });
