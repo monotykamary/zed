@@ -606,6 +606,11 @@ impl FocusHandle {
         self.id.is_focused(window)
     }
 
+    /// The id used by the window's tab-stop map.
+    pub fn id(&self) -> FocusId {
+        self.id
+    }
+
     /// Obtains whether the element associated with this handle contains the focused
     /// element or is itself focused.
     pub fn contains_focused(&self, window: &Window, cx: &App) -> bool {
@@ -2123,6 +2128,36 @@ impl Window {
         }
     }
 
+    /// Move focus to the next painted tab stop accepted by `allowed`.
+    /// Wraps inside that set. Hidden or unpainted handles are already absent
+    /// from the rendered tab map.
+    pub fn focus_next_among(&mut self, allowed: impl FnMut(&FocusId) -> bool, cx: &mut App) {
+        if !self.focus_enabled {
+            return;
+        }
+        if let Some(handle) = self
+            .rendered_frame
+            .tab_stops
+            .next_among(self.focus.as_ref(), allowed)
+        {
+            self.focus(&handle, cx)
+        }
+    }
+
+    /// Move focus to the previous painted tab stop accepted by `allowed`.
+    pub fn focus_prev_among(&mut self, allowed: impl FnMut(&FocusId) -> bool, cx: &mut App) {
+        if !self.focus_enabled {
+            return;
+        }
+        if let Some(handle) = self
+            .rendered_frame
+            .tab_stops
+            .prev_among(self.focus.as_ref(), allowed)
+        {
+            self.focus(&handle, cx)
+        }
+    }
+
     /// Accessor for the text system.
     pub fn text_system(&self) -> &Arc<WindowTextSystem> {
         &self.text_system
@@ -2491,6 +2526,13 @@ impl Window {
     #[cfg(any(test, feature = "test-support"))]
     pub fn painted_quads(&self) -> Vec<Quad> {
         self.rendered_frame.scene.quads.clone()
+    }
+
+    /// Surfaces in the most recently rendered frame. Used by tests to assert a
+    /// texture was composited without rasterizing.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn painted_surfaces(&self) -> Vec<crate::PaintSurface> {
+        self.rendered_frame.scene.surfaces.clone()
     }
 
     /// Set the content size of the window.
@@ -4460,7 +4502,7 @@ impl Window {
 
             self.next_frame.scene.insert_primitive(PolychromeSprite {
                 order: 0,
-                pad: 0,
+                nearest_neighbor: false.into(),
                 grayscale: false.into(),
                 bounds,
                 corner_radii: Default::default(),
@@ -4594,7 +4636,7 @@ impl Window {
         data: Arc<RenderImage>,
         frame_index: usize,
         grayscale: bool,
-        nearest: bool,
+        nearest_neighbor: bool,
     ) -> Result<()> {
         self.invalidator.debug_assert_paint();
 
@@ -4674,7 +4716,7 @@ impl Window {
 
         self.next_frame.scene.insert_primitive(PolychromeSprite {
             order: 0,
-            pad: u32::from(nearest),
+            nearest_neighbor: nearest_neighbor.into(),
             grayscale: grayscale.into(),
             bounds: visible_bounds_snapped,
             content_mask,
@@ -4704,21 +4746,62 @@ impl Window {
         });
     }
 
-    /// Uploads new pixels for an image while retaining same-sized atlas tiles.
-    pub fn update_image(&mut self, data: Arc<RenderImage>) -> Result<()> {
+    /// Paint a GPU texture into the scene for the next frame at the current z-index.
+    ///
+    /// `texture` must be `Arc<wgpu::Texture>` created on this window's
+    /// [`Self::gpu_context`] device. Ported from gpui-ce
+    /// ([#39](https://github.com/gpui-ce/gpui-ce/commit/6d043b22e477),
+    /// [#121](https://github.com/gpui-ce/gpui-ce/pull/121)).
+    ///
+    /// This method should only be called as part of the paint phase of element drawing.
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    pub fn paint_surface(
+        &mut self,
+        bounds: Bounds<Pixels>,
+        texture: std::sync::Arc<dyn std::any::Any + Send + Sync>,
+        texture_size: Size<DevicePixels>,
+    ) {
+        use crate::PaintSurface;
+
+        self.invalidator.debug_assert_paint();
+
+        let scale_factor = self.scale_factor();
+        let bounds = bounds.scale(scale_factor);
+        let content_mask = self.content_mask().scale(scale_factor);
+        self.next_frame.scene.insert_primitive(PaintSurface {
+            order: 0,
+            bounds,
+            content_mask,
+            texture,
+            texture_size,
+        });
+    }
+
+    /// Uploads new pixels for an image, retaining same-sized atlas tiles when possible.
+    ///
+    /// `data.id` must match the image already referenced by the current scene. Returns whether
+    /// every frame kept its existing atlas tile. When this returns `true`,
+    /// [`Self::present_cached_frame`] can present the updated pixels without redrawing.
+    pub fn update_image(&mut self, data: Arc<RenderImage>) -> Result<bool> {
+        let mut retained_all_tiles = data.frame_count() > 0;
         for frame_index in 0..data.frame_count() {
             let params = RenderImageParams {
                 image_id: data.id,
                 frame_index,
             };
-            self.sprite_atlas.update(
-                &params.into(),
-                data.size(frame_index),
-                data.as_bytes(frame_index)
-                    .expect("It's the caller's job to pass a valid frame index"),
-            )?;
+            let key = params.into();
+            let previous_tile = self
+                .sprite_atlas
+                .get_or_insert_with(&key, &mut || Ok(None))?;
+            let bytes = data
+                .as_bytes(frame_index)
+                .ok_or_else(|| anyhow!("missing image frame {frame_index}"))?;
+            let updated_tile = self
+                .sprite_atlas
+                .update(&key, data.size(frame_index), bytes)?;
+            retained_all_tiles &= previous_tile.is_some() && previous_tile == updated_tile;
         }
-        Ok(())
+        Ok(retained_all_tiles)
     }
 
     /// Removes an image from the sprite atlas.
@@ -6173,6 +6256,29 @@ impl Window {
         self.platform_window.gpu_specs()
     }
 
+    /// Returns the GPU context (device + queue) if available.
+    /// The returned `Box` contains `(Arc<wgpu::Device>, Arc<wgpu::Queue>)`.
+    ///
+    /// Ported from gpui-ce
+    /// ([#39](https://github.com/gpui-ce/gpui-ce/commit/6d043b22e477)).
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    pub fn gpu_context(&self) -> Option<Box<dyn std::any::Any>> {
+        self.platform_window.gpu_context()
+    }
+
+    /// Whether the GPU device backing this window has been lost (recovery
+    /// happens on a subsequent platform draw). `None` when the backend
+    /// cannot know. Embedders that captured the device from
+    /// [`Self::gpu_context`] should stop submitting while this is
+    /// `Some(true)` and re-acquire the device once it reads `Some(false)`.
+    ///
+    /// Ported from gpui-ce
+    /// ([#78](https://github.com/gpui-ce/gpui-ce/pull/78)).
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    pub fn gpu_device_lost(&self) -> Option<bool> {
+        self.platform_window.gpu_device_lost()
+    }
+
     /// Perform titlebar double-click action.
     /// This is macOS specific.
     pub fn titlebar_double_click(&self) {
@@ -6246,6 +6352,14 @@ impl Window {
     /// Debug representation of the last frame's accessibility information.
     pub fn debug_a11y_tree_json(&self) -> Option<String> {
         self.a11y.debug_tree_json()
+    }
+
+    /// Pretend a screen reader is connected so the next frame builds an
+    /// accessibility tree. Visual tests have no VoiceOver / UIA client, so
+    /// without this `debug_a11y_tree_json` stays empty.
+    pub fn set_a11y_active_for_tests(&mut self, active: bool) {
+        self.a11y.set_active_for_tests(active);
+        self.refresh();
     }
 
     /// Register a listener for an accessibility action on a specific node.

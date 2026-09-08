@@ -624,7 +624,7 @@ fn assert_main_thread(operation: &str) {
 unsafe fn pump_app_nonblocking() {
     unsafe {
         // NSApplication::run sleeps until the next display-link wake, which
-        // blocks Bun and starves PTY output. Drain only work that is ready now.
+        // blocks embedded hosts. Drain only work that is ready now.
         let app: id = msg_send![APP_CLASS, sharedApplication];
         let distant_past: id = msg_send![class!(NSDate), distantPast];
         let mode = kCFRunLoopDefaultMode as id;

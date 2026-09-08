@@ -482,6 +482,43 @@ mod tests {
     }
 
     #[test]
+    fn update_reuses_only_same_sized_tiles() -> anyhow::Result<()> {
+        let (device, queue) = test_device_and_queue()?;
+        let atlas = WgpuAtlas::new(device, queue, wgpu::TextureFormat::Bgra8Unorm);
+        let key = AtlasKey::Image(RenderImageParams {
+            image_id: ImageId(1),
+            frame_index: 0,
+        });
+        let initial_size = Size {
+            width: DevicePixels(1),
+            height: DevicePixels(1),
+        };
+        let initial_tile = atlas
+            .get_or_insert_with(&key, &mut || {
+                Ok(Some((initial_size, Cow::Owned(vec![0, 0, 0, 255]))))
+            })?
+            .expect("tile should be created");
+
+        let updated_tile = atlas
+            .update(&key, initial_size, &[255, 255, 255, 255])?
+            .expect("tile should be updated");
+        assert_eq!(updated_tile, initial_tile);
+
+        let resized = Size {
+            width: DevicePixels(2),
+            height: DevicePixels(1),
+        };
+        let resized_tile = atlas
+            .update(&key, resized, &[0, 0, 0, 255, 255, 255, 255, 255])?
+            .expect("tile should be reallocated");
+        assert_ne!(resized_tile, initial_tile);
+        assert_eq!(resized_tile.bounds.size, resized);
+
+        atlas.before_frame();
+        Ok(())
+    }
+
+    #[test]
     fn remove_deallocates_tile_space_for_reuse() -> anyhow::Result<()> {
         let (device, queue) = test_device_and_queue()?;
         let atlas = WgpuAtlas::new(device, queue, wgpu::TextureFormat::Bgra8Unorm);

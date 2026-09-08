@@ -1212,7 +1212,7 @@ SubpixelSpriteFragmentOutput subpixel_sprite_fragment(MonochromeSpriteFragmentIn
 
 struct PolychromeSprite {
     uint order;
-    uint pad;
+    uint nearest_neighbor;
     uint grayscale;
     float opacity;
     Bounds bounds;
@@ -1256,7 +1256,7 @@ PolychromeSpriteVertexOutput polychrome_sprite_vertex(uint vertex_id: SV_VertexI
 float4 polychrome_sprite_fragment(PolychromeSpriteFragmentInput input): SV_Target {
     PolychromeSprite sprite = poly_sprites[input.sprite_id];
     float4 sample = t_sprite.Sample(s_sprite, input.tile_position);
-    if (sprite.pad != 0u) {
+    if (sprite.nearest_neighbor != 0u) {
         uint width;
         uint height;
         t_sprite.GetDimensions(width, height);
