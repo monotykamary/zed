@@ -967,6 +967,47 @@ impl X11Window {
         prop2: u32,
     ) -> anyhow::Result<()> {
         let state = self.0.state.borrow();
+        let attributes = get_reply(
+            || "X11 GetWindowAttributes before changing window state failed.",
+            self.0.xcb.get_window_attributes(self.0.x_window),
+        )?;
+        if attributes.map_state == xproto::MapState::UNMAPPED {
+            let reply = get_reply(
+                || "X11 GetProperty before changing initial window state failed.",
+                self.0.xcb.get_property(
+                    false,
+                    self.0.x_window,
+                    state.atoms._NET_WM_STATE,
+                    xproto::AtomEnum::ATOM,
+                    0,
+                    u32::MAX,
+                ),
+            )?;
+            let mut atoms = reply
+                .value32()
+                .map(|atoms| atoms.collect::<Vec<_>>())
+                .unwrap_or_default();
+            for atom in [prop1, prop2].into_iter().filter(|atom| *atom != 0) {
+                if let Some(index) = atoms.iter().position(|existing| *existing == atom) {
+                    atoms.remove(index);
+                } else {
+                    atoms.push(atom);
+                }
+            }
+            check_reply(
+                failure_context,
+                self.0.xcb.change_property32(
+                    xproto::PropMode::REPLACE,
+                    self.0.x_window,
+                    state.atoms._NET_WM_STATE,
+                    xproto::AtomEnum::ATOM,
+                    &atoms,
+                ),
+            )?;
+            xcb_flush(&self.0.xcb);
+            return Ok(());
+        }
+
         let message = ClientMessageEvent::new(
             32,
             self.0.x_window,
@@ -1022,7 +1063,7 @@ impl X11Window {
                 pointer.root_x as u32,
                 pointer.root_y as u32,
                 flag,
-                0, // Left mouse button
+                1, // Left mouse button
                 0,
             ],
         );
